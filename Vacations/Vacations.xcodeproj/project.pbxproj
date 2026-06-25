@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		CAFE0003CAFE0003CAFE0003 /* RiveRuntime in Frameworks */ = {isa = PBXBuildFile; productRef = CAFE0002CAFE0002CAFE0002 /* RiveRuntime */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		04F9813E2FA9C52400F06138 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -52,6 +56,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				CAFE0003CAFE0003CAFE0003 /* RiveRuntime in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +117,7 @@
 			);
 			name = Vacations;
 			packageProductDependencies = (
+				CAFE0002CAFE0002CAFE0002 /* RiveRuntime */,
 			);
 			productName = Vacations;
 			productReference = 04F981302FA9C52200F06138 /* Vacations.app */;
@@ -195,6 +201,9 @@
 			);
 			mainGroup = 04F981272FA9C52200F06138;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				CAFE0001CAFE0001CAFE0001 /* XCRemoteSwiftPackageReference "rive-ios" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 04F981312FA9C52200F06138 /* Products */;
 			projectDirPath = "";
@@ -578,6 +587,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		CAFE0001CAFE0001CAFE0001 /* XCRemoteSwiftPackageReference "rive-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/rive-app/rive-ios";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 6.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		CAFE0002CAFE0002CAFE0002 /* RiveRuntime */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = CAFE0001CAFE0001CAFE0001 /* XCRemoteSwiftPackageReference "rive-ios" */;
+			productName = RiveRuntime;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 04F981282FA9C52200F06138 /* Project object */;
 }

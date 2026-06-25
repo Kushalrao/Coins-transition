@@ -13,6 +13,9 @@ struct RewardCardModel: Identifiable, Equatable {
     let id: UUID
     let title: String
     let imageName: String
+    /// Asset name shown in the card header once the deck is unlocked.
+    /// Replaces the gift-wrap artwork with a destination photograph.
+    let unlockedImageName: String
     /// Aspect/positioning describing how the gift-wrap art is laid into the
     /// card at the **front-slot** geometry (326 × 225). All other slots scale
     /// these values uniformly, so we only have to capture them once per card.
@@ -43,8 +46,9 @@ extension RewardCardModel {
         // 326 × 225 card with `left: -15px`, `bottom: -38px`.
         RewardCardModel(
             id: UUID(),
-            title: "Stay in Germany",
+            title: "Stay in Iceland",
             imageName: "GiftWrap",
+            unlockedImageName: "TripIceland",
             artwork: .init(width: 375, height: 281.058, leftInset: -15, bottomInset: -38)
         ),
         // "Experiences in Germany"
@@ -55,8 +59,9 @@ extension RewardCardModel {
         // those numbers become the values below.
         RewardCardModel(
             id: UUID(),
-            title: "Experiences in Germany",
+            title: "Experiences in Iceland",
             imageName: "Experiences",
+            unlockedImageName: "TripIceland",
             artwork: .init(width: 363.04, height: 351.86, leftInset: -2.94, bottomInset: -7.92)
         ),
         // "Schengen Visa"
@@ -70,6 +75,7 @@ extension RewardCardModel {
             id: UUID(),
             title: "Schengen Visa",
             imageName: "Schengen",
+            unlockedImageName: "TripFrance",
             artwork: .init(width: 363.01, height: 351.85, leftInset: -2.98, bottomInset: -7.91)
         ),
         // Additional rewards — same artwork families as the Figma three.
@@ -77,30 +83,35 @@ extension RewardCardModel {
             id: UUID(),
             title: "Stay in France",
             imageName: "GiftWrap",
+            unlockedImageName: "TripFrance",
             artwork: .init(width: 375, height: 281.058, leftInset: -15, bottomInset: -38)
         ),
         RewardCardModel(
             id: UUID(),
             title: "Experiences in France",
             imageName: "Experiences",
+            unlockedImageName: "TripFrance",
             artwork: .init(width: 363.04, height: 351.86, leftInset: -2.94, bottomInset: -7.92)
         ),
         RewardCardModel(
             id: UUID(),
             title: "Stay in Italy",
             imageName: "GiftWrap",
+            unlockedImageName: "TripItaly",
             artwork: .init(width: 375, height: 281.058, leftInset: -15, bottomInset: -38)
         ),
         RewardCardModel(
             id: UUID(),
             title: "Experiences in Italy",
             imageName: "Experiences",
+            unlockedImageName: "TripItaly",
             artwork: .init(width: 363.04, height: 351.86, leftInset: -2.94, bottomInset: -7.92)
         ),
         RewardCardModel(
             id: UUID(),
             title: "Spain Travel Pass",
             imageName: "Schengen",
+            unlockedImageName: "TripSpain",
             artwork: .init(width: 363.01, height: 351.85, leftInset: -2.98, bottomInset: -7.91)
         )
     ]
@@ -169,6 +180,11 @@ func lerp(_ a: CGFloat, _ b: CGFloat, _ t: CGFloat) -> CGFloat {
 struct RewardCardView: View {
     let model: RewardCardModel
     let slot: StackSlot
+    /// When `true` the gift-wrap artwork is replaced by the destination
+    /// photograph filling the card header. Driven by the slide-to-unlock
+    /// control on the rewards screen; pure passthrough — no scroll or
+    /// stack-interaction logic depends on it.
+    var isUnlocked: Bool = false
 
     /// Reference (front-slot) values used to derive proportional positions for
     /// internal elements. These match the Figma "Stay in Germany" card.
@@ -185,53 +201,58 @@ struct RewardCardView: View {
     private var scale: CGFloat { slot.width / referenceWidth }
 
     var body: some View {
-        let w = slot.width
-        let h = slot.height
-        let headerH = referenceHeaderHeight * scale
-        let titleY = referenceTitleCenterY * scale
-        let titleX = referenceTitleLeading * scale
-        let titleSize = referenceTitleSize * scale
-        let titleLine = referenceTitleLineHeight * scale
-
+        // Render the card at a fixed reference size with fixed font size,
+        // then apply a single .scaleEffect for the slot's size. This avoids
+        // re-laying out the text and re-rasterizing the font at every
+        // fractional size during a drag — that re-rasterization is what was
+        // causing the per-frame lag and the "Unable to update Font Descriptor"
+        // log spam.
         ZStack(alignment: .topLeading) {
-            // White card surface (the visible footer area)
             DesignColors.cardSurface
 
-            // Yellow header — full-width, top of card, square bottom
             DesignColors.cardYellow
-                .frame(width: w, height: headerH)
+                .frame(width: referenceWidth, height: referenceHeaderHeight)
 
-            // Gift-wrap artwork. Sized + positioned in front-slot coordinates
-            // then scaled. Using `.offset` after a fixed frame keeps the
-            // artwork's geometry stable regardless of slot.
-            Image(model.imageName)
-                .resizable()
-                .interpolation(.high)
-                .frame(width: model.artwork.width * scale, height: model.artwork.height * scale)
-                .offset(
-                    x: model.artwork.leftInset * scale,
-                    y: h - (model.artwork.height * scale) - (model.artwork.bottomInset * scale)
-                )
+            if isUnlocked {
+                // Unlocked state: destination photograph fills the yellow
+                // header area (326 × 157). The yellow rect underneath is
+                // covered, so the unlocked card reads as a photo card.
+                Image(model.unlockedImageName)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: referenceWidth, height: referenceHeaderHeight)
+                    .clipped()
+            } else {
+                // Locked state: gift-wrap artwork at its Figma-defined offset.
+                Image(model.imageName)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: model.artwork.width, height: model.artwork.height)
+                    .offset(
+                        x: model.artwork.leftInset,
+                        y: referenceHeight - model.artwork.height - model.artwork.bottomInset
+                    )
+            }
 
-            // Title — Lexend Deca SemiBold, vertically centered at titleY
             Text(model.title)
-                .font(DesignFont.semibold(titleSize))
+                .font(DesignFont.semibold(referenceTitleSize))
                 .foregroundColor(.black)
-                .frame(height: titleLine)
+                .frame(height: referenceTitleLineHeight)
                 .fixedSize(horizontal: true, vertical: false)
-                .offset(x: titleX, y: titleY - titleLine / 2)
+                .offset(x: referenceTitleLeading,
+                        y: referenceTitleCenterY - referenceTitleLineHeight / 2)
         }
-        .frame(width: w, height: h, alignment: .topLeading)
+        .frame(width: referenceWidth, height: referenceHeight, alignment: .topLeading)
         .compositingGroup()
-        .clipShape(RoundedRectangle(cornerRadius: slot.cornerRadius, style: .continuous))
-        // Approximate Figma's spread by inflating the SwiftUI shadow radius.
-        // Figma: 0px 0px {radius}px {spread}px rgba(0,0,0,0.04)
+        .clipShape(RoundedRectangle(cornerRadius: StackSlot.front.cornerRadius, style: .continuous))
         .shadow(
             color: .black.opacity(0.04),
-            radius: (slot.shadowRadius + slot.shadowSpread) / 2,
+            radius: (StackSlot.front.shadowRadius + StackSlot.front.shadowSpread) / 2,
             x: 0,
             y: 0
         )
+        .scaleEffect(scale, anchor: .center)
         .opacity(slot.opacity)
     }
 }

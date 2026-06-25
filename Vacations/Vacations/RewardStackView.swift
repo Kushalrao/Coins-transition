@@ -2,47 +2,134 @@
 //  RewardStackView.swift
 //  Vacations
 //
-//  Three reward cards stacked the way iPhone lock-screen notifications stack.
-//  The user scrolls vertically anywhere on the page; cards drift slowly with
-//  the finger (a fraction of the drag distance), the front card stays at full
-//  opacity, and on release the spring animation either commits to the next /
-//  previous step or snaps back. The list is finite — there is no wrap-around;
-//  scrolling past the first or last card meets rubber-band resistance.
+//  Reward-card stack. The view itself is animation-agnostic: it owns the
+//  drag state, gesture, snap, and rendering loop, but defers per-card
+//  position/scale/opacity to a `CardStackAnimation` value. Each animation
+//  is a self-contained struct that defines how a single card moves through
+//  its life — peek → emerge → exit. New animations are added by
+//  conforming a new struct to `CardStackAnimation` and passing it in.
 //
 
 import SwiftUI
 
+// MARK: - Animation interface
+
+/// Defines how cards move through the stack. The view owns the gesture and
+/// drag bookkeeping; a `CardStackAnimation` owns the per-card visual.
+///
+/// Coordinate system: `cp` (card progress) is a single card's progress along
+/// its own path.
+///   cp =  0  → card is at the front slot (the focal point)
+///   cp <  0  → card is queued behind, awaiting its turn at the front
+///   cp >  0  → card has passed the front and is on its way out
+/// The view renders cards whose cp falls inside `[-2 - entryFadeRange,
+/// exitFadeRange)`; everything else is culled.
+protocol CardStackAnimation {
+    /// Drag distance in pt that advances the stack by one card.
+    var dragPerCard: CGFloat { get }
+    /// How far past cp = 0 a card stays rendered before being culled.
+    var exitFadeRange: CGFloat { get }
+    /// How far behind cp = -2 a card stays rendered before being culled.
+    var entryFadeRange: CGFloat { get }
+
+    /// Returns the slot (size/opacity/corner-radius/etc.) and an extra
+    /// y-offset to apply on top of `slot.yOffset`. The view positions the
+    /// card at `centerY + slot.yOffset + extraY`.
+    func slot(forCardProgress cp: CGFloat) -> (slot: StackSlot, extraY: CGFloat)
+}
+
+// MARK: - Animation 1 — J-curve with springy hook
+
+/// iPhone lock-screen style notification stack. Each card traces a J:
+///   • Peek phase (curve): card walks the back→middle→front keyframes,
+///     scaling and fading up to 1.0.
+///   • Linear phase (long stroke): once at the front, further drag
+///     translates the card linearly upward off-screen.
+///   • Springy hook at the bottom of the J — the descent dips past the
+///     natural back-peek, then springs upward to settle `bottomLift` pt
+///     above the back-peek position. The spring rate is tuned to outrun
+///     the natural descent so the trajectory is monotonic — no jerk back
+///     down at the settle point.
+struct JCurveAnimation: CardStackAnimation {
+    var dragPerCard: CGFloat = 180
+    var exitFadeRange: CGFloat = 2.5
+    var entryFadeRange: CGFloat = 1.0
+
+    /// Vertical translation per unit of card-progress past the front. Roughly
+    /// one card-row, so exiting cards stack upward as they leave.
+    var linearStep: CGFloat = 220
+    /// Final upward offset at the settled back position.
+    var bottomLift: CGFloat = 42
+    /// Depth of the dip past the natural back-peek before the spring back.
+    var bottomOvershoot: CGFloat = 14
+    /// What fraction of the descent (cp ∈ [-1, -2]) is the down-phase before
+    /// the spring kicks in. Larger = deeper dip, snappier rebound.
+    var downPhaseEnd: CGFloat = 0.65
+
+    func slot(forCardProgress cp: CGFloat) -> (slot: StackSlot, extraY: CGFloat) {
+        if cp >= 0 {
+            // Linear stroke. Front shape, translating up by cp·linearStep.
+            return (.front, -cp * linearStep)
+        }
+        if cp >= -1 {
+            // Curve, near-front segment: middle → front.
+            let t = cp + 1
+            return (StackSlot.interpolate(from: .middle, to: .front, t: t), liftAt(cp))
+        }
+        if cp >= -2 {
+            // Curve, far-back segment: back → middle.
+            let t = cp + 2
+            return (StackSlot.interpolate(from: .back, to: .middle, t: t), liftAt(cp))
+        }
+        // Beyond the back peek: hold at back position (with the same upward
+        // lift as cp = -2 so there's no y-discontinuity at the boundary) and
+        // fade out so deeper cards don't pop in abruptly when scrolled toward.
+        let fade = max(0, 1 + (cp + 2) / entryFadeRange)
+        return (StackSlot.back.withOpacity(StackSlot.back.opacity * Double(fade)), liftAt(cp))
+    }
+
+    /// Springy hook at the bottom of the J. Smoothstep down-phase (descent
+    /// and natural fall pull together so smoothing is fine), linear
+    /// spring-back (constant rate beats the natural descent → monotonic up
+    /// to the settle point, no jerk).
+    private func liftAt(_ cp: CGFloat) -> CGFloat {
+        guard cp <= -1 else { return 0 }
+        let t = min(1, -(cp + 1))   // 0 at cp = -1, 1 at cp = -2, clamps beyond
+        if t < downPhaseEnd {
+            let s = t / downPhaseEnd
+            let smooth = s * s * (3 - 2 * s)
+            return bottomOvershoot * smooth
+        } else {
+            let s = (t - downPhaseEnd) / (1 - downPhaseEnd)
+            return bottomOvershoot + (-bottomLift - bottomOvershoot) * s
+        }
+    }
+}
+
+// MARK: - View
+
 struct RewardStackView: View {
+    let animation: any CardStackAnimation
+    /// Pure passthrough. Forwarded to each `RewardCardView` so the card
+    /// header swaps from gift-wrap to a destination photo. Doesn't touch
+    /// the scroll/animation logic in this view.
+    var isUnlocked: Bool = false
+
     @State private var cards: [RewardCardModel] = RewardCardModel.demo
-    @State private var topIndex: Int = 0
-    /// Cumulative scroll position. Negative = scrolled up (cards expanded
-    /// into a list). Spring-snaps to one of the two stable states on
-    /// release; the chosen state then persists so the next drag continues
-    /// from there.
     @State private var dragOffset: CGFloat = 0
-    /// `dragOffset` snapshot for the currently-settled state (collapsed or
-    /// expanded). New drags start from here.
     @State private var dragBase: CGFloat = 0
-    @State private var isCommitting: Bool = false
 
-    /// Two stable states — compact stack and fully-expanded list.
-    private let collapsedOffset: CGFloat = 0
-    private var expandedOffset: CGFloat { -dragRange }
+    /// Rubber-band stiffness when dragging past the deck's first/last card.
+    /// Lower = more give; 1.0 = no rubber-band. Owned by the view, not the
+    /// animation, since the deck-end behavior is the same regardless of how
+    /// individual cards move.
+    private let edgeResistance: CGFloat = 0.3
 
-    /// How much of the finger's vertical travel the front card translates
-    /// vertically. Small enough to feel slow at typical drag distances;
-    /// total movement is unbounded so a long drag carries the card a long way.
-    private let frontYFollow: CGFloat = 0.15
-
-    /// Drag distance that drives one full step of the visual transition.
-    /// Larger than the commit threshold on purpose: a typical swipe only
-    /// nudges the cards a fraction of the way (≈ 15–20 pt at 90 pt drag),
-    /// matching the "slow-moving" feel; the spring on release finishes the
-    /// journey to the next / previous step.
-    private let dragRange: CGFloat = 500
-    /// Drag (or velocity) past which a release commits.
-    private let commitThreshold: CGFloat = 50
-    private let velocityThreshold: CGFloat = 600
+    init(animation: any CardStackAnimation = JCurveAnimation(),
+         isUnlocked: Bool = false) {
+        self.animation = animation
+        self.isUnlocked = isUnlocked
+    }
 
     var body: some View {
         GeometryReader { proxy in
@@ -50,291 +137,132 @@ struct RewardStackView: View {
             let centerY = proxy.size.height / 2
 
             ZStack {
-                ForEach(visibleEntries(), id: \.rel) { entry in
-                    RewardCardView(model: entry.card, slot: entry.slot)
-                        .position(
-                            x: centerX,
-                            y: centerY + entry.slot.yOffset
-                                + (entry.rel == 0 ? frontYOffset : stackScrollOffset)
-                        )
+                ForEach(visibleEntries(), id: \.index) { entry in
+                    RewardCardView(model: entry.card,
+                                   slot: entry.slot,
+                                   isUnlocked: isUnlocked)
+                        .position(x: centerX, y: centerY + entry.yOffset)
                         .zIndex(entry.zIndex)
                 }
             }
-            // Page-level gesture surface — capture scrolls anywhere on the
-            // stack's region, not just on the front card.
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
             .gesture(scrollGesture)
         }
     }
 
+    // MARK: - Progress
+
+    /// Total advancement through the stack, in units of cards. 0 = initial
+    /// state (card 0 at front). 1 = card 1 at front. Etc.
+    private var globalProgress: CGFloat {
+        -dragOffset / animation.dragPerCard
+    }
+
+    /// Last card cannot be advanced past the front. First card cannot retreat
+    /// below initial state.
+    private var maxProgress: CGFloat {
+        max(0, CGFloat(cards.count - 1))
+    }
+
     // MARK: - Entries
 
     private struct Entry {
-        let rel: Int
+        let index: Int
         let card: RewardCardModel
         let slot: StackSlot
+        let yOffset: CGFloat
         let zIndex: Double
     }
 
-    /// Bounded — no modulo wrap. At the first card there is nothing above;
-    /// at the last card there is nothing below. All cards in the data set
-    /// are rendered so they can fan into the expanded list.
     private func visibleEntries() -> [Entry] {
-        let count = cards.count
-        let rels = Array(-1..<count)
-        return rels.compactMap { rel in
-            let idx = topIndex + rel
-            guard idx >= 0, idx < count else { return nil }
-            let card = cards[idx]
-            let slot = slot(forRelativeIndex: rel, progress: visualProgress)
-            let z: Double = rel == -1
-                ? (visualProgress < 0 ? Double(count + 2) : -1)
-                : Double(count - rel)
-            return Entry(rel: rel, card: card, slot: slot, zIndex: z)
-        }
-    }
-
-    // MARK: - Slot computation
-
-    /// Signed normalized progress derived from the drag. Clamped to [−1, +1]
-    /// at the boundaries via `clampDragForBoundary` so the visual transition
-    /// can't overshoot either end of the list.
-    private var visualProgress: CGFloat {
-        -dragOffset / dragRange
-    }
-
-    /// Vertical offset applied to the front card on top of its slot's
-    /// resting yOffset. Slow follow of the finger drag — the front card
-    /// drifts as the user scrolls, stays at full opacity, never scales.
-    private var frontYOffset: CGFloat {
-        dragOffset * frontYFollow
-    }
-
-    /// Vertical offset applied to every non-front card *only* past the slot
-    /// transition (|dragOffset| > dragRange). Once the back card has fully
-    /// arrived at slot 0, further dragging translates the whole stack at
-    /// the same slow rate — no scaling, no opacity change, just movement.
-    private var stackScrollOffset: CGFloat {
-        if dragOffset < -dragRange {
-            return (dragOffset + dragRange) * frontYFollow
-        }
-        if dragOffset > dragRange {
-            return (dragOffset - dragRange) * frontYFollow
-        }
-        return 0
-    }
-
-    private func slot(forRelativeIndex rel: Int, progress p: CGFloat) -> StackSlot {
-        let cp = max(-1, min(1, p))
-        if cp >= 0 {
-            // Advancing (scroll up). Each card has a **two-phase** path
-            // that's strictly sequenced with its neighbours:
-            //
-            //   Phase A (emerge):  compactSlot → .front  (card comes
-            //                       forward into the active position)
-            //   Phase B (move up): .front → listSlot     (card slides up
-            //                       out of the way for the next one)
-            //
-            // Card N's "move up" runs in parallel with card N+1's "emerge",
-            // so at any given time only those two cards are moving — the
-            // rest are static. As the user keeps scrolling the cascade
-            // continues: each card emerges, then moves up to make room.
-            return advanceSlot(for: rel, progress: cp)
-        } else {
-            // Retreating — collapse back toward the compact stack.
-            let t = -cp
-            switch rel {
-            case -1: return StackSlot.interpolate(from: aboveTopRestSlot, to: .front,  t: t)
-            case 0:  return .front
-            case 1:  return StackSlot.interpolate(from: .middle,          to: .back,   t: t)
-            default: return restingSlot(forRelativeIndex: rel)
-            }
-        }
-    }
-
-    /// Two-phase advance: emerge to the front, then move up to the list.
-    /// Each phase takes one "slot" of overall progress, sized so the whole
-    /// cascade fits in 0…1 for the current card count.
-    private func advanceSlot(for rel: Int, progress p: CGFloat) -> StackSlot {
-        let phaseDuration: CGFloat = 1.0 / CGFloat(cards.count)
-        // Emerge runs from (rel−1)·phase → rel·phase.
-        // Move up runs from rel·phase → (rel+1)·phase.
-        // Front card has no emerge — it starts already at the front.
-        let emergeStart  = CGFloat(max(rel - 1, 0)) * phaseDuration
-        let emergeEnd    = CGFloat(rel) * phaseDuration
-        let moveUpStart  = emergeEnd
-        let moveUpEnd    = CGFloat(rel + 1) * phaseDuration
-
-        if p >= moveUpEnd {
-            return listSlot(for: rel)
-        }
-        if p >= moveUpStart {
-            let t = (p - moveUpStart) / phaseDuration
-            return StackSlot.interpolate(from: .front, to: listSlot(for: rel), t: t)
-        }
-        if rel == 0 {
-            // Front card starts already at .front; only the move-up phase
-            // applies, and it begins immediately at progress 0.
-            return .front
-        }
-        if p >= emergeStart {
-            let t = (p - emergeStart) / phaseDuration
-            return StackSlot.interpolate(from: compactSlot(for: rel), to: .front, t: t)
-        }
-        return compactSlot(for: rel)
-    }
-
-    /// Spacing between cards once they've fanned out into the vertical list.
-    private let listSpacing: CGFloat = 12
-
-    /// Compact slot for a given relative index. The first three are the
-    /// Figma-defined slots; deeper cards sit invisibly behind the back card
-    /// until the user scrolls (then they fade in at their list positions).
-    private func compactSlot(for rel: Int) -> StackSlot {
-        switch rel {
-        case 0:  return .front
-        case 1:  return .middle
-        case 2:  return .back
-        default:
-            // Rel ≥ 3 — same physical position as the back card but fully
-            // transparent so they're invisible in the compact stack.
-            return StackSlot(
-                width: StackSlot.back.width,
-                height: StackSlot.back.height,
-                yOffset: StackSlot.back.yOffset,
-                opacity: 0,
-                cornerRadius: StackSlot.back.cornerRadius,
-                shadowRadius: StackSlot.back.shadowRadius,
-                shadowSpread: StackSlot.back.shadowSpread
+        cards.indices.compactMap { i in
+            let cp = globalProgress - CGFloat(i)
+            guard cp > -2 - animation.entryFadeRange,
+                  cp < animation.exitFadeRange else { return nil }
+            let (slot, extraY) = animation.slot(forCardProgress: cp)
+            return Entry(
+                index: i,
+                card: cards[i],
+                slot: slot,
+                yOffset: slot.yOffset + extraY,
+                // Most-recently-fronted cards stay on top of the cards still
+                // queued behind them — matches lock-screen notifications where
+                // the latest card overlays the older ones as they slide away.
+                zIndex: Double(cp)
             )
         }
     }
 
-    /// Position in the vertical list for a given relative index. Anchored at
-    /// the back card's y-offset (so rel=2 lands there) and grows upward for
-    /// lower rels and downward for higher ones.
-    private func listSlot(for rel: Int) -> StackSlot {
-        let firstY = StackSlot.back.yOffset - 2 * (StackSlot.front.height + listSpacing)
-        return StackSlot(
-            width: StackSlot.front.width,
-            height: StackSlot.front.height,
-            yOffset: firstY + CGFloat(rel) * (StackSlot.front.height + listSpacing),
-            opacity: 1.0,
-            cornerRadius: StackSlot.front.cornerRadius,
-            shadowRadius: StackSlot.front.shadowRadius,
-            shadowSpread: StackSlot.front.shadowSpread
-        )
-    }
-
-    private func restingSlot(forRelativeIndex rel: Int) -> StackSlot {
-        switch rel {
-        case -1: return aboveTopRestSlot
-        case 0:  return .front
-        case 1:  return .middle
-        case 2:  return .back
-        default: return belowBackRestSlot
-        }
-    }
-
-    /// Resting position for the previously-dismissed card. Sits above the
-    /// front slot at **opacity 0** — invisible until you start scrolling
-    /// backward, then it eases in toward the front slot.
-    private var aboveTopRestSlot: StackSlot {
-        StackSlot(
-            width: StackSlot.front.width,
-            height: StackSlot.front.height,
-            yOffset: StackSlot.front.yOffset - 84,
-            opacity: 0,
-            cornerRadius: StackSlot.front.cornerRadius,
-            shadowRadius: StackSlot.front.shadowRadius,
-            shadowSpread: StackSlot.front.shadowSpread
-        )
-    }
-
-    private var belowBackRestSlot: StackSlot {
-        StackSlot(
-            width: StackSlot.back.width,
-            height: StackSlot.back.height,
-            yOffset: StackSlot.back.yOffset + 84,
-            opacity: 0,
-            cornerRadius: StackSlot.back.cornerRadius,
-            shadowRadius: StackSlot.back.shadowRadius,
-            shadowSpread: StackSlot.back.shadowSpread
-        )
-    }
-
     // MARK: - Gesture
-
-    private enum CommitDirection { case advance, retreat }
 
     private var scrollGesture: some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
                 let proposed = dragBase + value.translation.height
-                // Hard clamp at both stable bounds — no rubber-banding past
-                // the fully-expanded or fully-compact position.
-                dragOffset = max(expandedOffset, min(collapsedOffset, proposed))
+                dragOffset = rubberBanded(proposed)
+                logCardStates()
             }
             .onEnded { value in
-                // Spring to the nearer stable state; velocity overrides the
-                // midpoint check for a flick gesture.
                 let velocity = value.predictedEndTranslation.height - value.translation.height
-                let midpoint = (collapsedOffset + expandedOffset) / 2
-                let target: CGFloat
-                if velocity < -300 {
-                    target = expandedOffset
-                } else if velocity > 300 {
-                    target = collapsedOffset
-                } else {
-                    target = dragOffset < midpoint ? expandedOffset : collapsedOffset
-                }
-                withAnimation(.spring(response: 0.5, dampingFraction: 0.85)) {
+                // Project a portion of the fling, then snap to the nearest
+                // whole-card position so the stack rests with one card cleanly
+                // at the front.
+                let projected = dragOffset + velocity * 0.18
+                let lowerBound = -maxProgress * animation.dragPerCard
+                let clamped = max(lowerBound, min(0, projected))
+                let snappedProgress = (-clamped / animation.dragPerCard).rounded()
+                let target = -snappedProgress * animation.dragPerCard
+                withAnimation(.interpolatingSpring(stiffness: 180, damping: 16)) {
                     dragOffset = target
                 }
                 dragBase = target
             }
     }
 
-    /// Apply rubber-band resistance when the user tries to scroll past the
-    /// first or last card — the drag still registers but at 25% effect.
-    private func clampDragForBoundary(_ raw: CGFloat) -> CGFloat {
-        let canAdvance = topIndex < cards.count - 1
-        let canRetreat = topIndex > 0
-        if raw < 0 && !canAdvance { return raw * 0.25 }
-        if raw > 0 && !canRetreat { return raw * 0.25 }
+    /// Apply rubber-band resistance once the drag passes either deck end. The
+    /// further past the end, the more the next pt of finger travel is damped,
+    /// so the cards visibly slow as you keep pulling — and snap back on release.
+    private func rubberBanded(_ raw: CGFloat) -> CGFloat {
+        let lowerBound = -maxProgress * animation.dragPerCard
+        if raw > 0 {
+            return raw * edgeResistance
+        }
+        if raw < lowerBound {
+            return lowerBound + (raw - lowerBound) * edgeResistance
+        }
         return raw
     }
 
-    private func snapBack() {
-        withAnimation(.spring(response: 0.6, dampingFraction: 0.9)) {
-            dragOffset = 0
+    // MARK: - Logging
+
+    private func logCardStates() {
+        func r(_ v: CGFloat, _ p: Int = 2) -> String {
+            let m = pow(10.0, Double(p))
+            return String(Double((v * CGFloat(m)).rounded()) / m)
         }
+        var line = "drag=\(r(dragOffset, 1)) gp=\(r(globalProgress, 3))"
+        for entry in visibleEntries() {
+            let cp = globalProgress - CGFloat(entry.index)
+            let scale = entry.slot.width / StackSlot.front.width
+            line += " | i=\(entry.index) cp=\(r(cp, 2)) y=\(r(entry.yOffset, 1)) scale=\(r(scale, 3)) opacity=\(r(CGFloat(entry.slot.opacity), 2))"
+        }
+        print(line)
     }
+}
 
-    private func commit(direction: CommitDirection) {
-        isCommitting = true
-        // Drive `dragOffset` far enough that `frontXOffset` carries the front
-        // card off the side of the screen at the same slow follow rate used
-        // during drag — no extra fast snap. The back cards' slot interp
-        // clamps at ±1 so overshooting the range is harmless for them.
-        let target: CGFloat = direction == .advance ? -2400 : 2400
+// MARK: - StackSlot helpers
 
-        withAnimation(.spring(response: 0.85, dampingFraction: 0.95)) {
-            dragOffset = target
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
-            var transaction = Transaction()
-            transaction.disablesAnimations = true
-            withTransaction(transaction) {
-                switch direction {
-                case .advance: topIndex = min(topIndex + 1, cards.count - 1)
-                case .retreat: topIndex = max(topIndex - 1, 0)
-                }
-                dragOffset = 0
-                isCommitting = false
-            }
-        }
+private extension StackSlot {
+    func withOpacity(_ newOpacity: Double) -> StackSlot {
+        StackSlot(
+            width: width,
+            height: height,
+            yOffset: yOffset,
+            opacity: newOpacity,
+            cornerRadius: cornerRadius,
+            shadowRadius: shadowRadius,
+            shadowSpread: shadowSpread
+        )
     }
 }
