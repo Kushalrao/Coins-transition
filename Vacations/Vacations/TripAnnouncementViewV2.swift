@@ -36,6 +36,12 @@ struct TripAnnouncementViewV2: View {
     @State private var dissolveProgress: CGFloat = 0 // mask sweep 0→1 (bottom→top)
     @State private var bandTop: CGFloat = -40        // glyph-pixel band (rel. to centre)
     @State private var bandBottom: CGFloat = 40
+    // Subtle anticipation lift on the solid number, just before it dissolves
+    // (purely cosmetic — particles are unaffected). Flip `textLiftEnabled` off
+    // to fully revert this behaviour.
+    private let textLiftEnabled = true
+    @State private var numberZoom: CGFloat = 1
+    @State private var numberLift: CGFloat = 0
 
     // The dissolve sweep: a short crossfade beat, then the wave climbs the text.
     private let dissolveWaveStart: Double = 0.18
@@ -104,33 +110,40 @@ struct TripAnnouncementViewV2: View {
         let span = max(1, maxY - minY)
         bandTop = minY
         bandBottom = maxY
-        return origins.map { o in
-            let frac = Double((maxY - o.y) / span)   // 0 = bottom, 1 = top
-            let ang = Double.random(in: 0 ..< (2 * .pi))
-            let rr = CGFloat.random(in: 0...14)      // tight band hugging the pill
-            let a: CGFloat = 82, b: CGFloat = 32     // halo radii ≈ pill border
-            return DissolveDot(
-                origin: o,
-                orbitAngle: ang,
-                orbitA: a + rr,
-                orbitB: b + rr,
-                orbitSpeed: Double.random(in: 0.1...0.22),   // very slow drift around the pill
-                settles: Double.random(in: 0...1) < 0.3,     // only ~30% stay as the halo
-                // Bow outward mid-flight so the cloud fans out as it rises, then
-                // converges back to the settle point at the top.
-                arc: (o.x >= 0 ? 1 : -1) * CGFloat.random(in: 30...85)
-                    + CGFloat.random(in: -10...10),
-                size: .random(in: 2.0...4.0),
-                gold: Int.random(in: 0..<5) != 0,    // mostly gold, some white
-                // birth time tracks the sweep line as it reaches this row
-                delay: dissolveWaveStart + frac * dissolveWaveSpread + .random(in: 0...0.04),
-                dur: .random(in: 0.95...1.5),
-                jamp: .random(in: 1.5...4.5),        // settle "riddle" jitter
-                jfreq: .random(in: 1.4...2.8),
-                jphase: .random(in: 0 ..< (2 * .pi)),
-                twFreq: .random(in: 2.0...4.0),       // twinkle
-                twPhase: .random(in: 0 ..< (2 * .pi))
-            )
+        // 3 particles per sampled glyph pixel → ~3× denser rise. The settle
+        // probability is cut to ~1/3 to keep the on-top halo count the same.
+        return origins.flatMap { o -> [DissolveDot] in
+            (0..<3).compactMap { _ -> DissolveDot? in
+                if Double.random(in: 0...1) < 0.2 { return nil }   // drop 20% of total
+                let jx = CGFloat.random(in: -2.5...2.5)
+                let jy = CGFloat.random(in: -2.5...2.5)
+                let frac = Double((maxY - o.y) / span)   // 0 = bottom, 1 = top
+                let ang = Double.random(in: 0 ..< (2 * .pi))
+                let rr = CGFloat.random(in: 0...14)      // tight band hugging the pill
+                let a: CGFloat = 82, b: CGFloat = 32     // halo radii ≈ pill border
+                return DissolveDot(
+                    origin: CGPoint(x: o.x + jx, y: o.y + jy),
+                    orbitAngle: ang,
+                    orbitA: a + rr,
+                    orbitB: b + rr,
+                    orbitSpeed: Double.random(in: 0.1...0.22),   // very slow drift around the pill
+                    settles: Double.random(in: 0...1) < 0.034,   // ~1/3 of before stay as the halo
+                    // Bow outward mid-flight so the cloud fans out as it rises,
+                    // then converges back to the settle point at the top.
+                    arc: (o.x >= 0 ? 1 : -1) * CGFloat.random(in: 30...85)
+                        + CGFloat.random(in: -10...10),
+                    size: .random(in: 2.0...4.0),
+                    gold: Double.random(in: 0...1) < 0.7,  // 70% gold, 30% white
+                    // birth time tracks the sweep line as it reaches this row
+                    delay: dissolveWaveStart + frac * dissolveWaveSpread + .random(in: 0...0.04),
+                    dur: .random(in: 0.95...1.5),
+                    jamp: .random(in: 1.5...4.5),        // settle "riddle" jitter
+                    jfreq: .random(in: 1.4...2.8),
+                    jphase: .random(in: 0 ..< (2 * .pi)),
+                    twFreq: .random(in: 2.0...4.0),       // twinkle
+                    twPhase: .random(in: 0 ..< (2 * .pi))
+                )
+            }
         }
     }
 
@@ -168,7 +181,18 @@ struct TripAnnouncementViewV2: View {
         // Phase 2 — Instantly added to your balance. The pill flies in as the
         // bolt finishes forming.
         withAnimation(.easeInOut(duration: 0.45)) { phase = .added }
-        try? await Task.sleep(nanoseconds: 300_000_000)
+        // Subtle anticipation: the solid number scales up and drifts up slowly,
+        // leading into (and continuing through the start of) the particle
+        // conversion. Purely cosmetic — the particles themselves are unchanged.
+        if textLiftEnabled {
+            withAnimation(.easeOut(duration: 1.1)) {
+                numberZoom = 1.06
+                numberLift = -28          // clearer upward drift, not just scale
+            }
+        }
+        // Start the particle conversion almost immediately, so the text is
+        // visibly scaling/lifting while the particles are already forming.
+        try? await Task.sleep(nanoseconds: 120_000_000)
 
         // The number disintegrates DIRECTLY into fine particles (no count to
         // zero) that stream up into the balance pill — Apple-Wallet style. The
@@ -286,8 +310,12 @@ struct TripAnnouncementViewV2: View {
                                        alignment: .top)
                         )
                         .shadow(color: .black.opacity(0.12), radius: 16, x: 0, y: 4)
+                        // Subtle anticipation: scale up & drift up just before
+                        // dissolving (cosmetic; does not affect the particles).
+                        .scaleEffect(textLiftEnabled ? numberZoom : 1, anchor: .center)
                         .opacity(appeared && numberShown ? 1 : 0)
-                        .position(x: w / 2, y: numberY)
+                        .position(x: w / 2,
+                                  y: numberY + (textLiftEnabled ? numberLift : 0))
 
                     // "Travel rewards earned" — earned phase only.
                     Text("Travel rewards earned")
@@ -590,7 +618,7 @@ struct TripAnnouncementViewV2: View {
 
     private var coinsPill: some View {
         HStack(spacing: 8) {
-            Image("SpinCoinBadge")
+            Image("PillCoin")
                 .resizable().interpolation(.high)
                 .frame(width: 32, height: 32)
 
@@ -881,7 +909,9 @@ private struct ParticleDissolveView: View {
                         y = gy + CGFloat(cos(t * d.jfreq * 1.2 + d.jphase)) * d.jamp
                         let twinkle = 0.5 + 0.5 * sin(t * d.twFreq + d.twPhase)
                         let settleIn = min(st / 0.25, 1)   // ease into the twinkle
-                        op = (1 - settleIn) + settleIn * (0.45 + 0.55 * twinkle)
+                        // Settle to ~40% opacity (with a gentle twinkle), easing
+                        // down from full as it arrives.
+                        op = (1 - settleIn) + settleIn * (0.4 * (0.7 + 0.3 * twinkle))
                         r = d.size * 0.85
                     }
                     if op <= 0.02 { continue }
