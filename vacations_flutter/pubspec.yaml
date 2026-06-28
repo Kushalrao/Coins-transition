@@ -1,0 +1,40 @@
+name: vacations_flutter
+description: "Flutter port of the Vacations TripAnnouncementViewV2 rewards sequence."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.11.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+  video_player: ^2.9.2
+  flutter_svg: ^2.0.10+1
+  flutter_shaders: ^0.1.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/images/
+    - assets/video/
+
+  shaders:
+    - shaders/card_warp.frag
+
+  # Lexend Deca ships as one variable font (LexendDeca-VF.ttf). We register the
+  # same family at each weight used by the Swift source (Regular→400 … Black→900)
+  # and select instances via fontVariations('wght') in DesignFont.
+  fonts:
+    - family: LexendDeca
+      fonts:
+        - asset: assets/fonts/LexendDeca-VF.ttf
