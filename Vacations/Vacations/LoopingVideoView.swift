@@ -4,8 +4,11 @@
 //
 //  Plays a bundled video. By default it loops; with `playOnce` it plays the
 //  clip a single time and holds on the final frame (used for the scapía coin
-//  that morphs into the energy bolt — the gif's last frame IS the bolt). The
-//  clip has an opaque background, so no transparency handling is needed.
+//  that morphs into the energy bolt — the clip's last frame IS the bolt).
+//  Clips are opaque. Artwork rendered on a pure-white plate can still be
+//  dropped onto a coloured background by applying `.blendMode(.multiply)` at
+//  the call site — white multiplies away to nothing, so only the art remains
+//  and it re-composites live if the background behind it animates.
 //
 
 import SwiftUI
@@ -43,6 +46,7 @@ struct LoopingVideoView: UIViewRepresentable {
             self.rate = rate
             super.init(frame: .zero)
             backgroundColor = .clear
+            isOpaque = false
             playerLayer.videoGravity = gravity
             playerLayer.player = queuePlayer
             queuePlayer.isMuted = true

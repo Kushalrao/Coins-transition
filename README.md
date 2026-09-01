@@ -2,6 +2,17 @@
 
 A pixel-faithful **Flutter port** of a post-booking *"travel rewards earned"* animation that was originally prototyped in **SwiftUI**. The sequence counts up the coins you earned, disintegrates that number into a cloud of glyph-shaped particles that stream into a balance pill, and then flies your booked-flight card onto the screen with a curved-sheet warp.
 
+> [!IMPORTANT]
+> **This branch (`coins-transition-v2-aurora`) updates the SwiftUI side only.**
+> `Vacations/` now carries the cinematic as it stands in the main *My trips*
+> prototype: roughly twice the code, with an aurora that floods the screen
+> behind a travelling glass beam, two maintained variants, and per-booking-kind
+> artwork. The Flutter port in `vacations_flutter/` and the values in
+> [`FLUTTER_PORT_SPEC.md`](FLUTTER_PORT_SPEC.md) still track the **older**
+> SwiftUI version described below, so the two are no longer in lock-step.
+> Everything under "The sequence" and "What makes it interesting" describes
+> that older version.
+
 This repository keeps **both** implementations side by side — the original SwiftUI prototype and the Flutter re-implementation — plus an exhaustive, value-for-value [porting spec](FLUTTER_PORT_SPEC.md) so the two stay in lock-step.
 
 <p align="center">
@@ -29,10 +40,15 @@ The whole thing is one timed, non-interactive cinematic (~8.5s) driven by a sing
 .
 ├── Vacations/                       # Original SwiftUI prototype (Xcode project)
 │   └── Vacations/
-│       ├── TripAnnouncementViewV2.swift   # ← the screen this port reproduces
+│       ├── TripAnnouncementViewV2.swift   # the screen: layout + master timeline
+│       ├── CoinsVariant.swift             # the two maintained variants
+│       ├── AuroraWave.swift               # the travelling glass beam
+│       ├── GlassWave.metal                # its refraction / specular / halo
 │       ├── CardWarpShader.metal           # card entrance distortion
-│       ├── DesignTokens.swift             # colors + Lexend Deca weights
-│       └── …
+│       ├── RewardHaptics.swift            # ticker burst + continuous rumble
+│       ├── Theme.swift, DesignTokens.swift # colors + Lexend Deca weights
+│       ├── BackDeploy.swift               # iOS 16 fallbacks
+│       └── LoopingVideoView.swift, CoinRewards.mp4
 │
 ├── vacations_flutter/               # The Flutter port
 │   ├── lib/
@@ -78,9 +94,21 @@ Verified on the iOS Simulator (iPhone 16 Pro) and Android emulator (API 35, Impe
 
 > **Tip:** in *debug* mode Android shows the Flutter splash for a few seconds during cold start (JIT + asset warm-up); a `--release` build starts near-instantly. The animation timeline itself is identical on both platforms.
 
-### Running the original SwiftUI prototype
+### Running the SwiftUI prototype
 
-Open `Vacations/Vacations.xcodeproj` in Xcode and run on an iOS simulator. The app starts directly on `TripAnnouncementViewV2`.
+Open `Vacations/Vacations.xcodeproj` in Xcode and run on an iOS simulator. The app starts directly on `TripAnnouncementViewV2` and the sequence plays once on appear. Nothing navigates — the card's "View booking details" and offers pill are no-ops here.
+
+Two variants of the sequence are maintained, both always built (see `CoinsVariant.swift`). A plain Run gives `refined` — the particle dissolve and the aurora. For the other:
+
+```bash
+xcrun simctl launch <udid> kushal.Vacations -coinsVariant classic
+```
+
+`classic` drops the particle cloud (the number just fades) and replaces the aurora with three drifting gradient blooms that leave upward. The confirmation celebrates a flight by default; `-bookingKind stay|experience|train|bus` exercises the other artwork.
+
+#### Known issue on this branch
+
+`makeDissolveDots()` rasterizes the hardcoded string `"32,800"` while the screen now shows **27,053** — the amount changed in the prototype and the sampler was never updated. Both are `dd,ddd`, so the cloud still lands in the right place at the right size and the effect reads as intended, but the particles are the shape of a *different* number. Left as-is here so the branch stays a faithful snapshot of the prototype.
 
 ---
 
